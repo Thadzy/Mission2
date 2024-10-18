@@ -1,0 +1,150 @@
+import cv2
+import numpy as np
+import time
+
+# Initialize webcam capture
+cap = cv2.VideoCapture(0)
+
+# Add parameters for line stabilization
+previous_lines = []
+stability_threshold = 10  # Minimum number of frames a line must be detected
+line_memory = 5  # Number of frames to remember
+min_line_distance = 30  # Minimum distance between detected lines
+
+# Frame rate control
+target_fps = 15  # Set your desired frame rate
+frame_delay = 1.0 / target_fps  # Calculate delay between frames
+
+def are_lines_similar(line1, line2, threshold=20):
+    """Check if two lines are similar in position"""
+    x1_1, y1_1, x2_1, y2_1 = line1
+    x1_2, y1_2, x2_2, y2_2 = line2
+    
+    # For vertical lines, compare x coordinates
+    if abs(x1_1 - x2_1) < 5 and abs(x1_2 - x2_2) < 5:
+        return abs(x1_1 - x1_2) < threshold
+    
+    return False
+
+def merge_similar_lines(lines):
+    """Merge similar lines by averaging their positions"""
+    if lines is None or len(lines) == 0:
+        return []
+    
+    merged_lines = []
+    used = set()
+    
+    for i, line1 in enumerate(lines):
+        if i in used:
+            continue
+            
+        similar_lines = [line1]
+        used.add(i)
+        
+        for j, line2 in enumerate(lines):
+            if j not in used and are_lines_similar(line1[0], line2[0]):
+                similar_lines.append(line2)
+                used.add(j)
+        
+        if similar_lines:
+            # Average the positions of similar lines
+            avg_line = np.mean(similar_lines, axis=0)
+            merged_lines.append(avg_line)
+    
+    return merged_lines
+
+# Initialize variables for FPS calculation
+prev_frame_time = time.time()
+fps = 0
+
+while True:
+    # Calculate time elapsed since last frame
+    curr_frame_time = time.time()
+    time_elapsed = curr_frame_time - prev_frame_time
+    
+    # Only process frame if enough time has elapsed
+    if time_elapsed > frame_delay:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Update FPS calculation
+        if time_elapsed > 0:  # Prevent division by zero
+            fps = 0.9 * fps + 0.1 * (1.0 / time_elapsed)  # Smooth FPS display
+        prev_frame_time = curr_frame_time
+
+        # Apply Gaussian blur to reduce noise
+        blurred = cv2.GaussianBlur(frame, (5, 5), 0)
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
+
+        # Apply Canny edge detection with adjusted parameters
+        edges = cv2.Canny(gray, 30, 150)
+
+        # Dilate edges to connect potential gaps
+        kernel = np.ones((3,3), np.uint8)
+        edges = cv2.dilate(edges, kernel, iterations=1)
+
+        # Hough Line Transform with adjusted parameters
+        lines = cv2.HoughLinesP(edges, 
+                               rho=1, 
+                               theta=np.pi/180, 
+                               threshold=50,
+                               minLineLength=100,  # Increased minimum line length
+                               maxLineGap=20)      # Increased max gap
+
+        # Get frame dimensions and calculate center
+        frame_height, frame_width = frame.shape[:2]
+        center_x = frame_width // 2
+
+        # Merge similar lines and update previous_lines
+        if lines is not None:
+            merged_lines = merge_similar_lines(lines)
+            previous_lines.append(merged_lines)
+            if len(previous_lines) > line_memory:
+                previous_lines.pop(0)
+        
+        x_position = None
+        
+        # Find and draw the most central vertical line
+        if previous_lines:
+            vertical_lines = []
+            for line in previous_lines[-1]:
+                x1, y1, x2, y2 = line[0].astype(int)
+                
+                # Check if the line is vertical
+                if abs(x1 - x2) < 5:  # Vertical line
+                    vertical_lines.append((x1, abs(x1 - center_x)))
+            
+            # Find the most central vertical line
+            if vertical_lines:
+                central_vertical = min(vertical_lines, key=lambda x: x[1])
+                x1 = central_vertical[0]
+                cv2.line(frame, (x1, 0), (x1, frame_height), (0, 255, 0), 2)
+                x_position = x1 - center_x
+
+        # Draw crosshair
+        cv2.line(frame, (center_x, 0), (center_x, frame_height), (0, 0, 255), 2)
+        cv2.putText(frame, "Center: (0)", (center_x + 10, frame_height - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        # Display detected position in top-left corner
+        if x_position is not None:
+            cv2.putText(frame, f"X: {x_position}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # Display FPS
+        cv2.putText(frame, f"FPS: {int(fps)}", (10, frame_height - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        cv2.imshow('Center Line Detection with X Coordinate', frame)
+    
+    # Add a small delay to prevent CPU overload
+    time.sleep(max(0, frame_delay - time_elapsed))
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()

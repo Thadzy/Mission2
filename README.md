@@ -1,6 +1,6 @@
 # Mission2
 
-# README: Center Line Detection with X Coordinate and Stepper Motor Control
+Center Line Detection with X Coordinate and Stepper Motor Control
 
 This project contains two major components:
 
